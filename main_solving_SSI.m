@@ -1,4 +1,4 @@
-%%              Coupled TLM with halfspace 阻抗
+%%             TLM coupled FEM for SSI under fixed foundation conditions
 clc
 clear
 % 内域几何信息
@@ -8,13 +8,12 @@ NOCs=dlmread('element_Solid.txt',',',[1,1,NEs,4]);
 XofNs=dlmread('node_Solid.txt',',',[1,1,NNs,2]);
 
 % 材料信息
-cp=[766;766];cs=[442;442];rs=[2700;2700];
+cp=[400;400];cs=[250;250];rs=[2700;2700];
 Type_material=size(rs,1);
 lamds=(-2*cs.^2+cp.^2).*rs;
 Gs=cs.^2.*rs;
 vt=lamds./(2*(lamds+Gs));
-dims=2; % 计算维数
-[Material_Elasstic] = Materials_matrix(rs,vt,cs,Type_material,dims);
+[Material_Elasstic] = Materials_matrix(rs,vt,cs,Type_material);
 num_mater=[1:Type_material].';
 materils=zeros(NEs,1);
 % 各个单元材料属性
@@ -30,19 +29,27 @@ materils(ele_soil2,1)=num_mater(2);
 [MM1,KK1] = integrate_Solid(NOCs,XofNs,Material_Elasstic,materils);  %J denotes the lumped
 CC1=sparse(size(MM1,1),size(MM1,1),0);
 
-% 基岩强制位移
-ntime=2001; dt=0.01;
-t0=2;fp=0.7;A_max=0.001;
+% 
+%%                           基岩强制位移
+% 1. dirac 脉冲
+% T =5;
+% fp=1/T;
+% x = t./T;
+% Force = A_max*16.*(x.^3.*heaviside(x)-4.*(x-0.25).^3.*heaviside(x-0.25)+6.*(x-0.5).^3.*heaviside(x-0.5)-4.*(x-0.75).^3.*heaviside(x-0.75)+(x-1).^3.*heaviside(x-1));
+% Force((abs(Force)<1.0e-8))=0;
+% 2. Ricker 小波
+ntime=1024*32; dt=0.01;
+t0=4;fp=0.5;A_max=0.001;
 t=(0:dt:(ntime-1)*dt);
-disp=A_max*(1-2*(pi*fp*(t-t0)).^2).*exp(-(pi*fp*(t-t0)).^2);
-disp(abs(disp)<1.0e-8)=0;
-incidence=fft(disp);
+Disp=A_max*(1-2*(pi*fp*(t-t0)).^2).*exp(-(pi*fp*(t-t0)).^2);
+Disp(abs(Disp)<1.0e-8)=0;
+% 
+incidence=fft(Disp.');
 Tp=(ntime-1)*dt;
 d_omiga=2*pi/Tp;
 omiga=0:d_omiga:(ntime-1)*d_omiga;
-omiga(1)=1.0e-10;
-Feq=zeros(2*NNs,ntime);
-plot(omiga,abs(incidence))
+omiga(1)=1.0e-8;
+plot(omiga./(2*pi),abs(incidence));
 fix_finitedomaiin= importdata('Bedrock_node.txt');
 fix_finitedomaiin= fix_finitedomaiin(find( ~ isnan(fix_finitedomaiin)));
 fix_finitedomaiin=[fix_finitedomaiin(1):fix_finitedomaiin(end):fix_finitedomaiin(2)].';
@@ -81,7 +88,8 @@ DofL_exclude_fix=2*BNL-2;
 fix_xL=BNL*2-1;
 fix_yL=BNL*2;
 fix_L=[fix_xL;fix_yL];
-% 自由场
+Z1=zeros(DofL_exclude_fix,DofL_exclude_fix);
+% 自由场初值
 Free_FL=zeros(2*BNL,ntime);
 Free_UL=zeros(2*BNL,ntime);
 Free_ForceL=zeros(2*BNL,ntime);
@@ -117,11 +125,11 @@ esp2=1.0e-8;
 fix_xR=BNR*2-1;
 fix_yR=BNR*2;
 fix_R=[fix_xR;fix_yR];
+Zr=zeros(DofR_exclude_fix,DofR_exclude_fix);
 % 自由场
-Free_FR=zeros(2*BNR,ntime);
-Free_UR=zeros(2*BNR,ntime);
-Free_ForceR=zeros(2*BNR,ntime);
-
+Free_FR=zeros(2*BNR,ntime); % 初始节点力
+Free_UR=zeros(2*BNR,ntime); % 初始
+Free_ForceR=zeros(2*BNR,ntime); % 初始节点力用于内域发生与自由场匹配位移
 
 AAL1(fix_L,:)=[]; AAL1(:,fix_L)=[];
 ABL1(fix_L,:)=[]; ABL1(:,fix_L)=[];
@@ -132,7 +140,7 @@ for jj=1:round(ntime/2)+1
     jj
     Fre=omiga(jj);
     %%———————————————————————————左右侧自由场求解
-    % 左侧自由场计算
+    %________________ 左侧自由场计算
     ACL=AGL-Fre^2*AML;
     Free_FL(:,jj)=Free_FL(:,jj)-ACL(:,fix_xL)*incidence(jj);
     ACL(fix_xL,:)=0;  %
@@ -146,7 +154,7 @@ for jj=1:round(ntime/2)+1
     Free_UL(:,jj)=ACL\Free_FL(:,jj);
     Free_ForceL(:,jj)=ADL1*Free_UL(:,jj); 
     ADL =ADL1;
-    % 右侧自由场计算
+    %______________________右侧自由场计算
     ACR=AGR-Fre^2*AMR;
     Free_FR(:,jj)=Free_FR(:,jj)-ACR(:,fix_xR)*incidence(jj);
     ACR(fix_xR,:)=0;
@@ -159,65 +167,33 @@ for jj=1:round(ntime/2)+1
     Free_FR(fix_yR,jj)=0;
     Free_UR(:,jj)=ACR\Free_FR(:,jj);
     Free_ForceR(:,jj)=ADR1*Free_UR(:,jj); 
+    ADR =ADR1;
+    
     %%———————————————————————— 无限域动力刚度矩阵计算
-    %% 左侧
-
+    % 左侧
     ACL(fix_L,:)=[]; ACL(:,fix_L)=[];
     ADL(fix_L,:)=[]; ADL(:,fix_L)=[];
     %%%%%%复模态%%%%%%%%%%
-    MB(1:DofL_exclude_fix,1:DofL_exclude_fix)=-ACL;%%%%%
-    MB(DofL_exclude_fix+1:2*DofL_exclude_fix,DofL_exclude_fix+1:2*DofL_exclude_fix)=AAL1;
-    
-    KB(1:DofL_exclude_fix,DofL_exclude_fix+1:2*DofL_exclude_fix)=-ACL;
-    KB(DofL_exclude_fix+1:2*DofL_exclude_fix,1:DofL_exclude_fix)=-ACL;
-    KB(DofL_exclude_fix+1:2*DofL_exclude_fix,DofL_exclude_fix+1:2*DofL_exclude_fix)=-ABL1;
+    MB=[-ACL,Z1;Z1,AAL1];
+    KB=[Z1,-ACL;-ACL,-ABL1];
     Ae=MB\KB;
     [Fei,lad]=eig(Ae); %每一频率下的特征向量矩阵、和特征值矩阵
     % 求左边动力刚度矩阵
-    jj4=0;
-    for jj2=1:2*2*(BNL-1)%%%%%%%找出模态中虚特征值小于0对应的的特征向量
-        if  ((abs(imag(lad(jj2,jj2)))<esp2) && (real((lad(jj2,jj2)))<-esp2 ))...
-                || (imag(lad(jj2,jj2))>esp2)
-            jj4=1+jj4;
-            LaL(jj4,jj4)=lad(jj2,jj2);
-            Fb_L(:,jj4)=Fei(:,jj2);%%%%%%%%%%找出特征值虚部小于零的特征向量
-        end
-    end
-    Number_jj1(jj)=jj4;
-    FbL=Fb_L(1:2*(BNL-1),:);%
-    Sb_L=-AAL1*FbL*(1i)*LaL/(FbL)-ADL; %
+    [LaL,FbL,jj4]=solve_eig_L(Fei,lad,DofL_exclude_fix,esp2);
+    Sb_L=-AAL1*FbL*(1i)*LaL/(FbL)-ADL;
     SBL(1:end-2,1:end-2)=Sb_L;
-
-    %% 右侧
-    ADR =ADR1;
+    %%                     右侧
     ACR(fix_R,:)=[]; ACR(:,fix_R)=[];
     ADR(fix_R,:)=[]; ADR(:,fix_R)=[];
     %%%%%%复模态%%%%%%%%%%
-    MBR(1:DofR_exclude_fix,1:DofR_exclude_fix)=-ACR;%%%%%
-    MBR(DofR_exclude_fix+1:2*DofR_exclude_fix,DofR_exclude_fix+1:2*DofR_exclude_fix)=AAR1;
-    
-    KBR(1:DofR_exclude_fix,DofR_exclude_fix+1:2*DofR_exclude_fix)=-ACR;
-    KBR(DofR_exclude_fix+1:2*DofR_exclude_fix,1:DofR_exclude_fix)=-ACR;
-    KBR(DofR_exclude_fix+1:2*DofR_exclude_fix,DofR_exclude_fix+1:2*DofR_exclude_fix)=-ABR1;
+    MBR=[-ACR,Zr;Zr,AAR1];
+    KBR=[Zr,-ACR;-ACR,-ABR1];
     AeR=MBR\KBR;
-    %%%%%%%%%%%求每一频率下的特征值和特征向量
+    %求每一频率下的特征值和特征向量
     [FeiR,ladR]=eig(AeR);
-    %%%%%%%%%%%%%每一频率下的特征向量矩阵、和特征值矩阵
-    % 求左边动力刚度矩阵
-    jj4=0;
-    for jj2=1:2*2*(BNR-1)%%%%%%%找出模态中虚特征值小于0对应的的特征向量
-        if  ((abs(imag(ladR(jj2,jj2)))<esp2) && (real((ladR(jj2,jj2)))>esp2 ))...
-                || (imag(ladR(jj2,jj2))<-esp2)
-            jj4=1+jj4;
-            LaR(jj4,jj4)=ladR(jj2,jj2);
-            Fb_R(:,jj4)=FeiR(:,jj2);%%%%%%%%%%找出特征值虚部小于零的特征向量
-        end
-    end
-    Number_jj1(jj)=jj4;
-    FbR=Fb_R(1:2*(BNR-1),:);%
+    [LaR,FbR,jj4R]=solve_eig_R(FeiR,ladR,DofR_exclude_fix,esp2);
     Sb_R=AAR1*FbR*(1i)*LaR/(FbR)+ADR; %
     SBR(1:end-2,1:end-2)=Sb_R;
-
   %% 有限域+边界
     [Keq]=Assembly_Finite_infinite(Fre,MM1,CC1,KK1,SBL,SBR,plus_BLL,plus_BRR);
     Feq(plus_BRR,jj)=SBR*Free_UR(:,jj)-Free_ForceR(:,jj);
